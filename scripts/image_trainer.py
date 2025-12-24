@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Standalone script for image model training (SDXL or Flux)
+Standalone script for image model training (SDXL, Flux, Z-Image, Qwen-Image)
 """
 
 import argparse
@@ -10,6 +10,7 @@ import subprocess
 import sys
 
 import toml
+import yaml
 
 
 # Add project root to python path to import modules
@@ -20,176 +21,204 @@ sys.path.append(project_root)
 import core.constants as cst
 import trainer.constants as train_cst
 import trainer.utils.training_paths as train_paths
-from core.config.config_handler import save_config_toml
+from core.config.config_handler import save_config, save_config_toml
 from core.dataset.prepare_diffusion_dataset import prepare_dataset
 from core.models.utility_models import ImageModelType
 
 
-def get_model_path(path: str) -> str:
-    if os.path.isdir(path):
-        files = [f for f in os.listdir(path) if os.path.isfile(os.path.join(path, f))]
-        if len(files) == 1 and files[0].endswith(".safetensors"):
-            return os.path.join(path, files[0])
-    return path
-
-def create_config(task_id, model_path, model_name, model_type, expected_repo_name):
+def create_config(task_id, model_path, model_name, model_type, expected_repo_name, trigger_word: str | None = None):
     """Get the training data directory"""
     train_data_dir = train_paths.get_image_training_images_dir(task_id)
 
     """Create the diffusion config file"""
     config_template_path, is_style = train_paths.get_image_training_config_template_path(model_type, train_data_dir)
+    is_ai_toolkit = model_type in [ImageModelType.Z_IMAGE.value, ImageModelType.QWEN_IMAGE.value]
 
-    with open(config_template_path, "r") as file:
-        config = toml.load(file)
+    if is_ai_toolkit:
+        with open(config_template_path, "r") as file:
+            config = yaml.safe_load(file)
+        if 'config' in config and 'process' in config['config']:
+            for process in config['config']['process']:
+                if 'model' in process:
+                    process['model']['name_or_path'] = model_path
+                    if 'training_folder' in process:
+                        output_dir = train_paths.get_checkpoints_output_path(task_id, expected_repo_name or "output")
+                        if not os.path.exists(output_dir):
+                            os.makedirs(output_dir, exist_ok=True)
+                        process['training_folder'] = output_dir
+                
+                if 'datasets' in process:
+                    dataset_path = train_paths.get_image_training_images_dir(task_id)
+                    for dataset in process['datasets']:
+                        dataset['folder_path'] = dataset_path
 
-    # Update config
-    network_config_person = {
-        "stabilityai/stable-diffusion-xl-base-1.0": 235,
-        "Lykon/dreamshaper-xl-1-0": 235,
-        "Lykon/art-diffusion-xl-0.9": 235,
-        "SG161222/RealVisXL_V4.0": 467,
-        "stablediffusionapi/protovision-xl-v6.6": 235,
-        "stablediffusionapi/omnium-sdxl": 235,
-        "GraydientPlatformAPI/realism-engine2-xl": 235,
-        "GraydientPlatformAPI/albedobase2-xl": 467,
-        "KBlueLeaf/Kohaku-XL-Zeta": 235,
-        "John6666/hassaku-xl-illustrious-v10style-sdxl": 228,
-        "John6666/nova-anime-xl-pony-v5-sdxl": 235,
-        "cagliostrolab/animagine-xl-4.0": 699,
-        "dataautogpt3/CALAMITY": 235,
-        "dataautogpt3/ProteusSigma": 235,
-        "dataautogpt3/ProteusV0.5": 467,
-        "dataautogpt3/TempestV0.1": 456,
-        "ehristoforu/Visionix-alpha": 235,
-        "femboysLover/RealisticStockPhoto-fp16": 467,
-        "fluently/Fluently-XL-Final": 228,
-        "mann-e/Mann-E_Dreams": 456,
-        "misri/leosamsHelloworldXL_helloworldXL70": 235,
-        "misri/zavychromaxl_v90": 235,
-        "openart-custom/DynaVisionXL": 228,
-        "recoilme/colorfulxl": 228,
-        "zenless-lab/sdxl-aam-xl-anime-mix": 456,
-        "zenless-lab/sdxl-anima-pencil-xl-v5": 228,
-        "zenless-lab/sdxl-anything-xl": 228,
-        "zenless-lab/sdxl-blue-pencil-xl-v7": 467,
-        "Corcelio/mobius": 228,
-        "GHArt/Lah_Mysterious_SDXL_V4.0_xl_fp16": 235,
-        "OnomaAIResearch/Illustrious-xl-early-release-v0": 228
-    }
+                if trigger_word:
+                    process['trigger_word'] = trigger_word
+        
+        config_path = os.path.join(train_cst.IMAGE_CONTAINER_CONFIG_SAVE_PATH, f"{task_id}.yaml")
+        save_config(config, config_path)
+        print(f"Created ai-toolkit config at {config_path}", flush=True)
+    else:
+        with open(config_template_path, "r") as file:
+            config = toml.load(file)
 
-    network_config_style = {
-        "stabilityai/stable-diffusion-xl-base-1.0": 235,
-        "Lykon/dreamshaper-xl-1-0": 235,
-        "Lykon/art-diffusion-xl-0.9": 235,
-        "SG161222/RealVisXL_V4.0": 235,
-        "stablediffusionapi/protovision-xl-v6.6": 235,
-        "stablediffusionapi/omnium-sdxl": 235,
-        "GraydientPlatformAPI/realism-engine2-xl": 235,
-        "GraydientPlatformAPI/albedobase2-xl": 235,
-        "KBlueLeaf/Kohaku-XL-Zeta": 235,
-        "John6666/hassaku-xl-illustrious-v10style-sdxl": 235,
-        "John6666/nova-anime-xl-pony-v5-sdxl": 235,
-        "cagliostrolab/animagine-xl-4.0": 235,
-        "dataautogpt3/CALAMITY": 235,
-        "dataautogpt3/ProteusSigma": 235,
-        "dataautogpt3/ProteusV0.5": 235,
-        "dataautogpt3/TempestV0.1": 228,
-        "ehristoforu/Visionix-alpha": 235,
-        "femboysLover/RealisticStockPhoto-fp16": 235,
-        "fluently/Fluently-XL-Final": 235,
-        "mann-e/Mann-E_Dreams": 235,
-        "misri/leosamsHelloworldXL_helloworldXL70": 235,
-        "misri/zavychromaxl_v90": 235,
-        "openart-custom/DynaVisionXL": 235,
-        "recoilme/colorfulxl": 235,
-        "zenless-lab/sdxl-aam-xl-anime-mix": 235,
-        "zenless-lab/sdxl-anima-pencil-xl-v5": 235,
-        "zenless-lab/sdxl-anything-xl": 235,
-        "zenless-lab/sdxl-blue-pencil-xl-v7": 235,
-        "Corcelio/mobius": 235,
-        "GHArt/Lah_Mysterious_SDXL_V4.0_xl_fp16": 235,
-        "OnomaAIResearch/Illustrious-xl-early-release-v0": 235
-    }
+        # Update config
+        network_config_person = {
+            "stabilityai/stable-diffusion-xl-base-1.0": 235,
+            "Lykon/dreamshaper-xl-1-0": 235,
+            "Lykon/art-diffusion-xl-0.9": 235,
+            "SG161222/RealVisXL_V4.0": 467,
+            "stablediffusionapi/protovision-xl-v6.6": 235,
+            "stablediffusionapi/omnium-sdxl": 235,
+            "GraydientPlatformAPI/realism-engine2-xl": 235,
+            "GraydientPlatformAPI/albedobase2-xl": 467,
+            "KBlueLeaf/Kohaku-XL-Zeta": 235,
+            "John6666/hassaku-xl-illustrious-v10style-sdxl": 228,
+            "John6666/nova-anime-xl-pony-v5-sdxl": 235,
+            "cagliostrolab/animagine-xl-4.0": 699,
+            "dataautogpt3/CALAMITY": 235,
+            "dataautogpt3/ProteusSigma": 235,
+            "dataautogpt3/ProteusV0.5": 467,
+            "dataautogpt3/TempestV0.1": 456,
+            "ehristoforu/Visionix-alpha": 235,
+            "femboysLover/RealisticStockPhoto-fp16": 467,
+            "fluently/Fluently-XL-Final": 228,
+            "mann-e/Mann-E_Dreams": 456,
+            "misri/leosamsHelloworldXL_helloworldXL70": 235,
+            "misri/zavychromaxl_v90": 235,
+            "openart-custom/DynaVisionXL": 228,
+            "recoilme/colorfulxl": 228,
+            "zenless-lab/sdxl-aam-xl-anime-mix": 456,
+            "zenless-lab/sdxl-anima-pencil-xl-v5": 228,
+            "zenless-lab/sdxl-anything-xl": 228,
+            "zenless-lab/sdxl-blue-pencil-xl-v7": 467,
+            "Corcelio/mobius": 228,
+            "GHArt/Lah_Mysterious_SDXL_V4.0_xl_fp16": 235,
+            "OnomaAIResearch/Illustrious-xl-early-release-v0": 228
+        }
 
-    config_mapping = {
-        228: {
-            "network_dim": 32,
-            "network_alpha": 32,
-            "network_args": []
-        },
-        235: {
-            "network_dim": 32,
-            "network_alpha": 32,
-            "network_args": ["conv_dim=4", "conv_alpha=4", "dropout=null"]
-        },
-        456: {
-            "network_dim": 64,
-            "network_alpha": 64,
-            "network_args": []
-        },
-        467: {
-            "network_dim": 64,
-            "network_alpha": 64,
-            "network_args": ["conv_dim=4", "conv_alpha=4", "dropout=null"]
-        },
-        699: {
-            "network_dim": 96,
-            "network_alpha": 96,
-            "network_args": ["conv_dim=4", "conv_alpha=4", "dropout=null"]
-        },
-    }
+        network_config_style = {
+            "stabilityai/stable-diffusion-xl-base-1.0": 235,
+            "Lykon/dreamshaper-xl-1-0": 235,
+            "Lykon/art-diffusion-xl-0.9": 235,
+            "SG161222/RealVisXL_V4.0": 235,
+            "stablediffusionapi/protovision-xl-v6.6": 235,
+            "stablediffusionapi/omnium-sdxl": 235,
+            "GraydientPlatformAPI/realism-engine2-xl": 235,
+            "GraydientPlatformAPI/albedobase2-xl": 235,
+            "KBlueLeaf/Kohaku-XL-Zeta": 235,
+            "John6666/hassaku-xl-illustrious-v10style-sdxl": 235,
+            "John6666/nova-anime-xl-pony-v5-sdxl": 235,
+            "cagliostrolab/animagine-xl-4.0": 235,
+            "dataautogpt3/CALAMITY": 235,
+            "dataautogpt3/ProteusSigma": 235,
+            "dataautogpt3/ProteusV0.5": 235,
+            "dataautogpt3/TempestV0.1": 228,
+            "ehristoforu/Visionix-alpha": 235,
+            "femboysLover/RealisticStockPhoto-fp16": 235,
+            "fluently/Fluently-XL-Final": 235,
+            "mann-e/Mann-E_Dreams": 235,
+            "misri/leosamsHelloworldXL_helloworldXL70": 235,
+            "misri/zavychromaxl_v90": 235,
+            "openart-custom/DynaVisionXL": 235,
+            "recoilme/colorfulxl": 235,
+            "zenless-lab/sdxl-aam-xl-anime-mix": 235,
+            "zenless-lab/sdxl-anima-pencil-xl-v5": 235,
+            "zenless-lab/sdxl-anything-xl": 235,
+            "zenless-lab/sdxl-blue-pencil-xl-v7": 235,
+            "Corcelio/mobius": 235,
+            "GHArt/Lah_Mysterious_SDXL_V4.0_xl_fp16": 235,
+            "OnomaAIResearch/Illustrious-xl-early-release-v0": 235
+        }
 
-    config["pretrained_model_name_or_path"] = model_path
-    config["train_data_dir"] = train_data_dir
-    output_dir = train_paths.get_checkpoints_output_path(task_id, expected_repo_name)
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir, exist_ok=True)
-    config["output_dir"] = output_dir
+        config_mapping = {
+            228: {
+                "network_dim": 32,
+                "network_alpha": 32,
+                "network_args": []
+            },
+            235: {
+                "network_dim": 32,
+                "network_alpha": 32,
+                "network_args": ["conv_dim=4", "conv_alpha=4", "dropout=null"]
+            },
+            456: {
+                "network_dim": 64,
+                "network_alpha": 64,
+                "network_args": []
+            },
+            467: {
+                "network_dim": 64,
+                "network_alpha": 64,
+                "network_args": ["conv_dim=4", "conv_alpha=4", "dropout=null"]
+            },
+            699: {
+                "network_dim": 96,
+                "network_alpha": 96,
+                "network_args": ["conv_dim=4", "conv_alpha=4", "dropout=null"]
+            },
+        }
 
-    if model_type == "sdxl":
-        if is_style:
-            network_config = config_mapping[network_config_style[model_name]]
-        else:
-            network_config = config_mapping[network_config_person[model_name]]
+        config["pretrained_model_name_or_path"] = model_path
+        config["train_data_dir"] = train_data_dir
+        output_dir = train_paths.get_checkpoints_output_path(task_id, expected_repo_name)
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir, exist_ok=True)
+        config["output_dir"] = output_dir
 
-        config["network_dim"] = network_config["network_dim"]
-        config["network_alpha"] = network_config["network_alpha"]
-        config["network_args"] = network_config["network_args"]
+        if model_type == "sdxl":
+            if is_style:
+                network_config = config_mapping[network_config_style[model_name]]
+            else:
+                network_config = config_mapping[network_config_person[model_name]]
 
-    # Save config to file
-    config_path = os.path.join(train_cst.IMAGE_CONTAINER_CONFIG_SAVE_PATH, f"{task_id}.toml")
-    save_config_toml(config, config_path)
-    print(f"Created config at {config_path}", flush=True)
+            config["network_dim"] = network_config["network_dim"]
+            config["network_alpha"] = network_config["network_alpha"]
+            config["network_args"] = network_config["network_args"]
+
+        # Save config to file
+        config_path = os.path.join(train_cst.IMAGE_CONTAINER_CONFIG_SAVE_PATH, f"{task_id}.toml")
+        save_config_toml(config, config_path)
+        print(f"Created config at {config_path}", flush=True)
     return config_path
 
 
 def run_training(model_type, config_path):
     print(f"Starting training with config: {config_path}", flush=True)
 
-    if model_type == "sdxl":
+    is_ai_toolkit = model_type in [ImageModelType.Z_IMAGE.value, ImageModelType.QWEN_IMAGE.value]
+
+    if is_ai_toolkit:
         training_command = [
-            "accelerate", "launch",
-            "--dynamo_backend", "no",
-            "--dynamo_mode", "default",
-            "--mixed_precision", "bf16",
-            "--num_processes", "1",
-            "--num_machines", "1",
-            "--num_cpu_threads_per_process", "2",
-            f"/app/sd-script/{model_type}_train_network.py",
-            "--config_file", config_path
+            "python3",
+            "/app/ai-toolkit/run.py",
+            config_path
         ]
-    elif model_type == "flux":
-        training_command = [
-            "accelerate", "launch",
-            "--dynamo_backend", "no",
-            "--dynamo_mode", "default",
-            "--mixed_precision", "bf16",
-            "--num_processes", "1",
-            "--num_machines", "1",
-            "--num_cpu_threads_per_process", "2",
-            f"/app/sd-scripts/{model_type}_train_network.py",
-            "--config_file", config_path
-        ]
+    else:
+        if model_type == "sdxl":
+            training_command = [
+                "accelerate", "launch",
+                "--dynamo_backend", "no",
+                "--dynamo_mode", "default",
+                "--mixed_precision", "bf16",
+                "--num_processes", "1",
+                "--num_machines", "1",
+                "--num_cpu_threads_per_process", "2",
+                f"/app/sd-script/{model_type}_train_network.py",
+                "--config_file", config_path
+            ]
+        elif model_type == "flux":
+            training_command = [
+                "accelerate", "launch",
+                "--dynamo_backend", "no",
+                "--dynamo_mode", "default",
+                "--mixed_precision", "bf16",
+                "--num_processes", "1",
+                "--num_machines", "1",
+                "--num_cpu_threads_per_process", "2",
+                f"/app/sd-scripts/{model_type}_train_network.py",
+                "--config_file", config_path
+            ]
 
     try:
         print("Starting training subprocess...\n", flush=True)
@@ -224,8 +253,9 @@ async def main():
     parser.add_argument("--task-id", required=True, help="Task ID")
     parser.add_argument("--model", required=True, help="Model name or path")
     parser.add_argument("--dataset-zip", required=True, help="Link to dataset zip file")
-    parser.add_argument("--model-type", required=True, choices=["sdxl", "flux"], help="Model type")
+    parser.add_argument("--model-type", required=True, choices=["sdxl", "flux", "z-image", "qwen-image"], help="Model type")
     parser.add_argument("--expected-repo-name", help="Expected repository name")
+    parser.add_argument("--trigger-word", help="Trigger word for the training")
     parser.add_argument("--hours-to-complete", type=float, required=True, help="Number of hours to complete the task")
     args = parser.parse_args()
 
